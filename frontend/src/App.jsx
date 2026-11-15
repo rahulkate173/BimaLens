@@ -1023,10 +1023,15 @@ export default function App() {
     if (!account) return
     const hasProcessing = policies.some(p => p.status === 'processing')
     if (!hasProcessing) return
+    // Poll every 5s while processing; auto-stop after 5 minutes (60 attempts)
+    let attempts = 0
     const interval = setInterval(async () => {
+      attempts++
       try {
         const updated = await getPolicies()
         setPolicies(updated)
+        const stillProcessing = updated.some(p => p.status === 'processing')
+        if (!stillProcessing || attempts >= 60) clearInterval(interval)
       } catch { /* silent */ }
     }, 5000)
     return () => clearInterval(interval)

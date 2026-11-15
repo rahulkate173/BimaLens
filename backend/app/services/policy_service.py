@@ -30,11 +30,13 @@ def _filename(value: str | None) -> str:
 def _public_policy(document: dict[str, Any] | None) -> dict[str, Any] | None:
     if document is None:
         return None
+    raw_status = document["status"]
+    status = "ready" if raw_status == "completed" else raw_status
     return {
         "id": str(document["_id"]),
         "filename": document["filename"],
         "uploaded_at": document["uploaded_at"],
-        "status": document["status"],
+        "status": status,
         "error": document.get("error"),
         "analysis": document.get("analysis"),
     }
@@ -140,7 +142,8 @@ async def complete_ocr(payload: OcrCompleteWebhook) -> None:
     except ValueError as error:
         raise HTTPException(status_code=404, detail="Policy not found.") from error
 
-    fields: dict[str, Any] = {"status": payload.status}
+    target_status = "ready" if payload.status == "completed" else payload.status
+    fields: dict[str, Any] = {"status": target_status}
     if payload.status == "completed":
         if payload.analysis_data is None or payload.annotated_pdf_public_id is None:
             raise HTTPException(status_code=422, detail="Completed jobs must include analysis and an annotated PDF.")

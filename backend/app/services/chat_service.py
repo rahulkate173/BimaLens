@@ -127,9 +127,20 @@ def _response_text(response: Any) -> str:
     return str(content)
 
 
+def _extract_json_object(text: str) -> str:
+    """Strip markdown fences + thinking preamble; return first valid JSON object."""
+    # Remove code fences
+    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.IGNORECASE | re.MULTILINE)
+    # Find the first { ... } block (handles thinking-token preamble from Sarvam)
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match:
+        return match.group(0)
+    return text
+
+
 def _parse_answer(response: Any, evidence: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
     text = _response_text(response).strip()
-    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE)
+    text = _extract_json_object(text)
     payload = json.loads(text)
     answer = payload.get("answer")
     source_ids = payload.get("source_ids")
@@ -284,7 +295,7 @@ async def generate_summary(
         try:
             response = await builder().ainvoke(messages)
             text = _response_text(response).strip()
-            text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE)
+            text = _extract_json_object(text)
             payload = json.loads(text)
             summary = payload.get("summary", "")
             if summary:

@@ -94,7 +94,7 @@ async def ask_policy_question(policy_id: str, body: AskRequest, owner_id: str = 
     policy = await policy_service.get_policy(owner_id, policy_id)
     if policy is None:
         raise HTTPException(status_code=404, detail="Policy not found.")
-    if policy["status"] != "ready":
+    if policy["status"] not in ("ready", "completed"):
         raise HTTPException(status_code=409, detail="Policy analysis is not ready yet.")
     result = await ask_question(
         question=body.question,
@@ -109,7 +109,7 @@ async def check_policy_fit(policy_id: str, body: FitRequest, owner_id: str = Wor
     policy = await policy_service.get_policy(owner_id, policy_id)
     if policy is None:
         raise HTTPException(status_code=404, detail="Policy not found.")
-    if policy["status"] != "ready":
+    if policy["status"] not in ("ready", "completed"):
         raise HTTPException(status_code=409, detail="Policy analysis is not ready yet.")
     result = await assess_fit(
         profile=body.model_dump(exclude_none=True),
@@ -131,7 +131,7 @@ async def get_claim_checklist(policy_id: str, owner_id: str = WorkspaceId):
     policy = await policy_service.get_policy(owner_id, policy_id)
     if policy is None:
         raise HTTPException(status_code=404, detail="Policy not found.")
-    if policy["status"] != "ready":
+    if policy["status"] not in ("ready", "completed"):
         raise HTTPException(status_code=409, detail="Policy analysis is not ready yet.")
     return ClaimChecklistResponse(
         items=policy_service.claim_checklist(policy.get("analysis")),
@@ -149,7 +149,7 @@ async def get_policy_summary(
     policy = await policy_service.get_policy(owner_id, policy_id)
     if policy is None:
         raise HTTPException(status_code=404, detail="Policy not found.")
-    if policy["status"] != "ready":
+    if policy["status"] not in ("ready", "completed"):
         raise HTTPException(status_code=409, detail="Policy analysis is not ready yet.")
 
     # Populate / refresh the SQLite RAG store for this policy
