@@ -13,7 +13,7 @@ from app.config import settings
 from app.models.schemas import OCRPageResult, TextBlock
 
 logger = logging.getLogger(__name__)
-DOWNLOAD_HOSTS = {"res.cloudinary.com"}
+DOWNLOAD_HOSTS = {"res.cloudinary.com", "api.cloudinary.com"}
 OCR_DPI = 200
 
 

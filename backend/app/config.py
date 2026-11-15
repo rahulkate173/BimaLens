@@ -19,9 +19,9 @@ class Settings(BaseSettings):
     SARVAM_API_BASE: str = "https://api.sarvam.ai/v1"
     SARVAM_MODEL: str = "sarvam-105b-conversations"
     GROQ_API_KEY: str = ""
-    GROQ_MODEL: str = "qwen/qwen3-32b"
+    GROQ_MODEL: str = "qwen/qwen3.8-27b"
     GOOGLE_API_KEY: str = ""
-    GOOGLE_MODEL: str = "gemini-2.5-flash"
+    GOOGLE_MODEL: str = "gemini-3.5-flash"
 
     OCR_PIPELINE_URL: str = "http://localhost:8001"
     PUBLIC_BACKEND_URL: str = "http://localhost:8000"

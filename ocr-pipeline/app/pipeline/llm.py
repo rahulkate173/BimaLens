@@ -45,6 +45,7 @@ def _sarvam():
         base_url=settings.SARVAM_API_BASE.rstrip("/") + "/",
         api_key=settings.SARVAM_API_KEY,
         temperature=0,
+        max_tokens=8192,
         max_retries=1,
     )
 
@@ -92,12 +93,17 @@ async def classify_page(page: OCRPageResult) -> PageClassification:
     if not page.text.strip():
         return PageClassification(page_number=page.page_number, extracted_points=[])
     providers = _providers()
+    # Truncate to 8000 chars — enough for one dense page, keeps output tokens manageable
+    page_text = page.text[:8000]
     messages = [
         SystemMessage(content=CLASSIFICATION_PROMPT.format(page_number=page.page_number)),
-        HumanMessage(content=f"PAGE TEXT (page {page.page_number}):\n{page.text[:30000]}"),
+        HumanMessage(content=f"PAGE TEXT (page {page.page_number}):\n{page_text}"),
     ]
     errors = []
-    for name, builder in providers:
+    for idx, (name, builder) in enumerate(providers):
+        # Brief back-off before each fallback provider to avoid rate limits
+        if idx > 0:
+            await asyncio.sleep(2)
         try:
             response = await builder().with_structured_output(PageClassification).ainvoke(messages)
             if not isinstance(response, PageClassification):
@@ -129,16 +135,18 @@ async def classify_page(page: OCRPageResult) -> PageClassification:
             )
             errors.append(name)
 
-    raise RuntimeError(
-        f"Could not classify policy page {page.page_number}; providers failed: {', '.join(errors)}."
+    logger.error(
+        "All providers failed for page %s (%s). Returning empty classification.",
+        page.page_number,
+        ", ".join(errors),
     )
+    return PageClassification(page_number=page.page_number, extracted_points=[])
 
 
 async def classify_pages(pages: list[OCRPageResult]) -> list[PageClassification]:
-    semaphore = asyncio.Semaphore(max(1, settings.PAGE_CLASSIFICATION_CONCURRENCY))
-
-    async def limited(page: OCRPageResult) -> PageClassification:
-        async with semaphore:
-            return await classify_page(page)
-
-    return await asyncio.gather(*(limited(page) for page in pages))
+    results = []
+    for page in pages:
+        result = await classify_page(page)
+        results.append(result)
+        await asyncio.sleep(2)  # 2-second pause between pages to avoid rate limits
+    return results

@@ -30,8 +30,8 @@ class Settings(BaseSettings):
     OCR_QUEUE_NAME: str = "bimalens:ocr:jobs"
     MAX_PDF_BYTES: int = 25 * 1024 * 1024
     SARVAM_MODEL: str = "sarvam-105b-conversations"
-    GROQ_MODEL: str = "qwen/qwen3-32b"
-    GOOGLE_MODEL: str = "gemini-2.5-flash"
+    GROQ_MODEL: str = "qwen/qwen3.8-27b"
+    GOOGLE_MODEL: str = "gemini-3.5-flash"
 
     # --- Service ---
     HOST: str = "0.0.0.0"
@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
 
     # --- Rate limiting ---
-    PAGE_CLASSIFICATION_CONCURRENCY: int = 2
+    PAGE_CLASSIFICATION_CONCURRENCY: int = 1
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

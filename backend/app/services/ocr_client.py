@@ -15,7 +15,6 @@ async def trigger_ocr_pipeline(policy_id: str, pdf_url: str) -> dict:
             json={
                 "policy_id": policy_id,
                 "pdf_url": pdf_url,
-                "callback_url": f"{settings.PUBLIC_BACKEND_URL.rstrip('/')}/api/v1/webhooks/ocr-complete",
             },
             headers={"X-Internal-Token": settings.INTERNAL_API_TOKEN},
         )
