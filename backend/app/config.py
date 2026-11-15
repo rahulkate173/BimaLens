@@ -17,7 +17,7 @@ class Settings(BaseSettings):
 
     SARVAM_API_KEY: str = ""
     SARVAM_API_BASE: str = "https://api.sarvam.ai/v1"
-    SARVAM_MODEL: str = "sarvam-105b-conversations"
+    SARVAM_MODEL: str = "sarvam-105b"
     GROQ_API_KEY: str = ""
     GROQ_MODEL: str = "qwen/qwen3.8-27b"
     GOOGLE_API_KEY: str = ""

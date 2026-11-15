@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379/0"
     OCR_QUEUE_NAME: str = "bimalens:ocr:jobs"
     MAX_PDF_BYTES: int = 25 * 1024 * 1024
-    SARVAM_MODEL: str = "sarvam-105b-conversations"
+    SARVAM_MODEL: str = "sarvam-105b"
     GROQ_MODEL: str = "qwen/qwen3.8-27b"
     GOOGLE_MODEL: str = "gemini-3.5-flash"
 
