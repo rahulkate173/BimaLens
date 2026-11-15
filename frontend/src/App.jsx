@@ -41,6 +41,7 @@ import {
 import {
   getPolicies,
   getPolicy,
+  getPolicyStatus,
   getPolicyPdfLink,
   getPolicySummary,
   getSarvamTTS,
@@ -96,6 +97,17 @@ const facts = [
     tone: 'lavender',
   },
 ]
+
+const VOICE_LANGUAGE_CODES = {
+  English: 'en-IN',
+  Hindi: 'hi-IN',
+  Marathi: 'mr-IN',
+  Bengali: 'bn-IN',
+  Tamil: 'ta-IN',
+  Telugu: 'te-IN',
+  Kannada: 'kn-IN',
+  Gujarati: 'gu-IN',
+}
 
 function routeFromHash() {
   const hash = window.location.hash.replace(/^#/, '')
@@ -509,12 +521,8 @@ function PolicySummaryCard({ policy }) {
   const [language, setLanguage] = useState('English')
   const [speaking, setSpeaking] = useState(false)
   const audioRef = useRef(null)
-
-  const LANGUAGE_MAP = {
-    'English': 'en-IN', 'Hindi': 'hi-IN', 'Marathi': 'mr-IN',
-    'Bengali': 'bn-IN', 'Tamil': 'ta-IN', 'Telugu': 'te-IN',
-    'Kannada': 'kn-IN', 'Gujarati': 'gu-IN',
-  }
+  const audioChunksRef = useRef([])
+  const audioChunkIndexRef = useRef(0)
 
   const loadSummary = async (lang) => {
     if (!policy) return
@@ -529,27 +537,49 @@ function PolicySummaryCard({ policy }) {
   const speakSummary = async () => {
     if (!summary || speaking) return
     setSpeaking(true)
-    const langCode = LANGUAGE_MAP[language] || 'en-IN'
+    const langCode = VOICE_LANGUAGE_CODES[language] || 'en-IN'
     try {
       const result = await getSarvamTTS(policy.id, summary, langCode)
-      if (result.audio_base64) {
-        const audio = new Audio(`data:audio/wav;base64,${result.audio_base64}`)
+      const audioChunks = result.audio_chunks?.length
+        ? result.audio_chunks
+        : result.audio_base64 ? [result.audio_base64] : []
+      if (audioChunks.length) {
+        const audio = new Audio()
+        audioChunksRef.current = audioChunks
+        audioChunkIndexRef.current = 0
         audioRef.current = audio
-        audio.onended = () => setSpeaking(false)
+        const playNextChunk = async () => {
+          const chunk = audioChunksRef.current[audioChunkIndexRef.current]
+          if (!chunk) {
+            audioRef.current = null
+            setSpeaking(false)
+            return
+          }
+          audio.src = `data:audio/wav;base64,${chunk}`
+          await audio.play()
+        }
+        audio.onended = () => {
+          audioChunkIndexRef.current += 1
+          playNextChunk().catch(() => setSpeaking(false))
+        }
         audio.onerror = () => setSpeaking(false)
-        await audio.play(); return
+        await playNextChunk()
+        return
       }
     } catch { /* fall through */ }
     if ('speechSynthesis' in window) {
       const utt = new SpeechSynthesisUtterance(summary)
+      utt.lang = langCode
       utt.onend = () => setSpeaking(false)
       utt.onerror = () => setSpeaking(false)
       window.speechSynthesis.speak(utt)
-    } else { setSpeaking(false) }
+    } else { setSpeaking(false); setError('Voice playback is not available in this browser.') }
   }
 
   const stopSpeaking = () => {
     if (audioRef.current) { audioRef.current.pause(); audioRef.current = null }
+    audioChunksRef.current = []
+    audioChunkIndexRef.current = 0
     window.speechSynthesis?.cancel()
     setSpeaking(false)
   }
@@ -568,12 +598,12 @@ function PolicySummaryCard({ policy }) {
           <div className="language-picker">
             <Languages size={15} />
             <select value={language} onChange={e => { setLanguage(e.target.value); setSummary(null) }} aria-label="Summary language">
-              {Object.keys(LANGUAGE_MAP).map(l => <option key={l}>{l}</option>)}
+              {Object.keys(VOICE_LANGUAGE_CODES).map(l => <option key={l}>{l}</option>)}
             </select>
             <ChevronDown size={13} />
           </div>
-          <button className="button button-outline button-small" onClick={() => loadSummary(language)} disabled={loading}>
-            {loading ? <><span className="processing-spinner" aria-hidden="true" /> Summarizing…</> : <><Sparkles size={14} /> Generate summary</>}
+          <button className="button button-outline button-small" onClick={() => loadSummary(language)} disabled={loading || policy.status !== 'ready'}>
+            {loading ? <><span className="processing-spinner" aria-hidden="true" /> Summarizing…</> : policy.status !== 'ready' ? 'Available after analysis' : <><Sparkles size={14} /> Generate summary</>}
           </button>
         </div>
       </div>
@@ -610,18 +640,18 @@ function PolicySummaryCard({ policy }) {
   )
 }
 
-function OverviewPage({ account, policies, navigate, openUpload, onOpenPolicy, onAskPolicy }) {
+function OverviewPage({ account, policies, policyError, navigate, openUpload, onOpenPolicy, onAskPolicy }) {
   const readyPolicies = policies.filter((policy) => policy.status === 'ready')
   const processingPolicies = policies.filter((policy) => policy.status === 'processing')
   const failedPolicies = policies.filter((policy) => policy.status === 'failed')
-  const extractedDetails = policies.reduce((total, policy) => total + (policy.analysis?.pages || []).reduce(
-    (pageTotal, page) => pageTotal + (page.extracted_points || []).length,
+  const firstPolicy = policies[0]
+  const extractedDetails = (firstPolicy?.analysis?.pages || []).reduce(
+    (total, page) => total + (page.extracted_points || []).length,
     0,
-  ), 0)
+  )
   const firstName = account.name.trim().split(/\s+/)[0]
   const greeting = new Date().getHours() < 12 ? 'Good morning' : new Date().getHours() < 18 ? 'Good afternoon' : 'Good evening'
   const dateLabel = new Date().toLocaleDateString('en-IN', { weekday: 'long', month: 'long', day: 'numeric' }).toUpperCase()
-  const firstPolicy = policies[0]
 
   return <div className="page">
     <div className="welcome-strip"><div><span className="welcome-date">{dateLabel}</span><h1>{greeting}, {firstName} <span>✳</span></h1><p>{policies.length ? 'Your policy workspace is up to date.' : 'Add your first policy to get started.'}</p></div><div className="welcome-art" aria-hidden="true"><span className="welcome-sun" /><span className="welcome-leaf leaf-one" /><span className="welcome-leaf leaf-two" /><span className="welcome-stem" /></div></div>
@@ -634,6 +664,7 @@ function OverviewPage({ account, policies, navigate, openUpload, onOpenPolicy, o
     <div className="dashboard-grid">
       <section className="dashboard-card policy-overview-card">
         <div className="card-heading"><div><span className="eyebrow">YOUR POLICY LIBRARY</span><h2>{firstPolicy ? 'Your latest policy.' : 'Start with your first policy.'}</h2></div><button className="button button-outline button-small" onClick={() => navigate('/app/policies')}>View all</button></div>
+        {policyError && <p className="form-error" role="alert">{policyError}</p>}
         {firstPolicy ? <div className="policy-summary">
           <div className="policy-cover"><div className="cover-emblem"><Shield size={25} /></div><span>PRIVATE<br />DOCUMENT</span><span className="cover-lines">— — — —</span></div>
           <div className="policy-summary-info"><div className="insurer-label"><span className="insurer-dot" /> Private policy document</div><h3>{firstPolicy.filename}</h3><p>Added {new Date(firstPolicy.uploaded_at).toLocaleDateString()}</p><div className="policy-tags"><span>{firstPolicy.status === 'ready' ? <CheckCircle2 size={12} /> : firstPolicy.status === 'processing' ? <span className="processing-spinner" /> : <Clock3 size={12} />} {firstPolicy.status === 'processing' ? 'Analyzing…' : firstPolicy.status}</span><span>{extractedDetails} details found</span></div><div className="policy-summary-actions"><button className="button button-dark button-small" disabled={firstPolicy.status !== 'ready'} onClick={() => firstPolicy.status === 'ready' ? onOpenPolicy(firstPolicy.id) : navigate('/app/policies')} title={firstPolicy.status !== 'ready' ? 'Analysis not ready yet — click to view policy library' : ''}>Open policy <ArrowRight size={14} /></button><button className="button button-outline button-small" disabled={firstPolicy.status !== 'ready'} onClick={() => firstPolicy.status === 'ready' ? onAskPolicy(firstPolicy.id) : navigate('/app/policies')} title={firstPolicy.status !== 'ready' ? 'Analysis not ready yet — click to view policy library' : ''}><MessageCircle size={14} /> Ask a question</button></div></div>
@@ -754,6 +785,93 @@ function ReaderPage({ navigate, policyId }) {
   </div>
 }
 
+function TTSPlaybackButton({ policyId, text, language }) {
+  const [playing, setPlaying] = useState(false)
+  const [error, setError] = useState('')
+  const audioRef = useRef(null)
+  const chunksRef = useRef([])
+  const chunkIndexRef = useRef(0)
+
+  useEffect(() => () => {
+    if (audioRef.current) {
+      audioRef.current.onended = null
+      audioRef.current.onerror = null
+      audioRef.current.pause()
+    }
+  }, [])
+
+  const stop = () => {
+    if (audioRef.current) {
+      audioRef.current.onended = null
+      audioRef.current.onerror = null
+      audioRef.current.pause()
+      audioRef.current = null
+    }
+    chunksRef.current = []
+    chunkIndexRef.current = 0
+    setPlaying(false)
+  }
+
+  const play = async () => {
+    if (playing) {
+      stop()
+      return
+    }
+    setError('')
+    setPlaying(true)
+    try {
+      const result = await getSarvamTTS(
+        policyId,
+        text,
+        VOICE_LANGUAGE_CODES[language] || 'en-IN',
+      )
+      const chunks = result.audio_chunks?.length
+        ? result.audio_chunks
+        : result.audio_base64 ? [result.audio_base64] : []
+      if (!chunks.length) throw new Error('Sarvam returned no audio.')
+
+      chunksRef.current = chunks
+      chunkIndexRef.current = 0
+      const audio = new Audio()
+      audioRef.current = audio
+      const playNextChunk = async () => {
+        const chunk = chunksRef.current[chunkIndexRef.current]
+        if (!chunk) {
+          audioRef.current = null
+          setPlaying(false)
+          return
+        }
+        audio.src = `data:audio/wav;base64,${chunk}`
+        await audio.play()
+      }
+      audio.onended = () => {
+        chunkIndexRef.current += 1
+        playNextChunk().catch(() => {
+          setError('Audio playback failed. Please try again.')
+          setPlaying(false)
+        })
+      }
+      audio.onerror = () => {
+        setError('Audio playback failed. Please try again.')
+        setPlaying(false)
+      }
+      await playNextChunk()
+    } catch (requestError) {
+      setPlaying(false)
+      setError(requestError.response?.data?.detail || 'Voice playback is unavailable right now.')
+    }
+  }
+
+  return (
+    <span className="chat-voice-control">
+      <button className="source-chip" type="button" onClick={play} aria-label={playing ? 'Stop audio' : 'Read answer aloud'}>
+        <AudioLines size={13} /> {playing ? 'Stop audio' : 'Listen'}
+      </button>
+      {error && <span className="chat-voice-error" role="alert">{error}</span>}
+    </span>
+  )
+}
+
 function AskPage({ navigate, policy }) {
   const [question, setQuestion] = useState('')
   const [messages, setMessages] = useState([])
@@ -761,9 +879,65 @@ function AskPage({ navigate, policy }) {
   const [recording, setRecording] = useState(false)
   const [sending, setSending] = useState(false)
   const [requestError, setRequestError] = useState('')
+  const recognitionRef = useRef(null)
   useEffect(() => {
     setMessages(policy ? [{ role: 'assistant', text: `Ask me about ${policy.filename}. I’ll use the policy analysis to answer and cite its source.`, source: null }] : [])
   }, [policy?.id])
+  useEffect(() => () => {
+    if (recognitionRef.current) {
+      recognitionRef.current.onend = null
+      recognitionRef.current.abort()
+    }
+  }, [])
+
+  const toggleVoiceInput = () => {
+    if (recording) {
+      recognitionRef.current?.stop()
+      return
+    }
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
+    if (!SpeechRecognition) {
+      setRequestError('Voice input is not supported in this browser. You can type your question instead.')
+      return
+    }
+
+    const recognition = new SpeechRecognition()
+    recognition.lang = VOICE_LANGUAGE_CODES[language] || 'en-IN'
+    recognition.continuous = false
+    recognition.interimResults = false
+    recognition.maxAlternatives = 1
+    recognition.onresult = (event) => {
+      const transcript = Array.from(event.results)
+        .map((result) => result[0]?.transcript || '')
+        .join(' ')
+        .trim()
+      if (transcript) {
+        setQuestion((current) => [current.trim(), transcript].filter(Boolean).join(' '))
+        setRequestError('')
+      }
+    }
+    recognition.onerror = (event) => {
+      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+        setRequestError('Microphone access was denied. Allow microphone access and try again.')
+      } else if (event.error !== 'aborted') {
+        setRequestError('Voice input could not recognize your question. Please try again or type it.')
+      }
+    }
+    recognition.onend = () => {
+      setRecording(false)
+      recognitionRef.current = null
+    }
+    recognitionRef.current = recognition
+    setRequestError('')
+    setRecording(true)
+    try {
+      recognition.start()
+    } catch {
+      recognitionRef.current = null
+      setRecording(false)
+      setRequestError('Could not start voice input. Check microphone permissions and try again.')
+    }
+  }
 
   const sendQuestion = async (value) => {
     const trimmed = value.trim()
@@ -771,6 +945,7 @@ function AskPage({ navigate, policy }) {
     setRequestError('')
     setMessages((current) => [...current, { role: 'user', text: trimmed }])
     setQuestion('')
+    recognitionRef.current?.stop()
     setRecording(false)
     if (!policy) return
     setSending(true)
@@ -779,6 +954,7 @@ function AskPage({ navigate, policy }) {
       setMessages((current) => [...current, {
         role: 'assistant',
         text: result.answer,
+        language,
         source: result.sources?.map((source) => `Page ${source.page}${source.section ? ` · ${source.section}` : ''}`).join(', ') || null,
       }])
     } catch (error) {
@@ -795,12 +971,12 @@ function AskPage({ navigate, policy }) {
         <div className="chat-policy-bar"><div className="chat-policy-icon"><FileText size={16} /></div><div><b>{policy?.filename || POLICY.name}</b><small>{policy ? 'Your uploaded policy' : `${POLICY.kind} · ${POLICY.pages} pages`}</small></div><span className="chat-rag-badge"><Sparkles size={9} /> RAG</span><span className="chat-ready"><span /> {policy?.status?.toUpperCase() || 'READY'}</span></div>
         <div className="chat-messages">
           <div className="chat-day-divider"><span>TODAY</span></div>
-          {messages.map((message, index) => <div key={`${message.role}-${index}`} className={`chat-message ${message.role === 'user' ? 'message-user' : ''}`}><div className={`chat-avatar ${message.role === 'user' ? 'user-chat-avatar' : ''}`}>{message.role === 'user' ? 'You' : <span className="brand-mark"><span /><span /><span /></span>}</div><div className="chat-message-content"><div className="chat-message-meta"><b>{message.role === 'user' ? 'You' : 'Bima'}</b><span>{message.role === 'user' ? '10:42 AM' : 'Just now'}</span></div><p>{message.text}</p>{message.source && <button className="source-chip" onClick={() => navigate('/app/reader')}><BookOpen size={13} /> {message.source} <ArrowUpRight size={12} /></button>}</div></div>)}
+          {messages.map((message, index) => <div key={`${message.role}-${index}`} className={`chat-message ${message.role === 'user' ? 'message-user' : ''}`}><div className={`chat-avatar ${message.role === 'user' ? 'user-chat-avatar' : ''}`}>{message.role === 'user' ? 'You' : <span className="brand-mark"><span /><span /><span /></span>}</div><div className="chat-message-content"><div className="chat-message-meta"><b>{message.role === 'user' ? 'You' : 'Bima'}</b><span>{message.role === 'user' ? '10:42 AM' : 'Just now'}</span></div><p>{message.text}</p>{message.role === 'assistant' && policy && <div className="chat-message-actions">{message.source && <button className="source-chip" onClick={() => navigate('/app/reader')}><BookOpen size={13} /> {message.source} <ArrowUpRight size={12} /></button>}<TTSPlaybackButton policyId={policy.id} text={message.text} language={message.language || language} /></div>}</div></div>)}
           {sending && <div className="recording-state" role="status"><span className="processing-spinner" />Checking your policy for an answer…</div>}
           {requestError && <p className="form-error chat-request-error" role="alert">{requestError}</p>}
           {recording && <div className="recording-state"><AudioLines size={17} /> Listening for your question… <button onClick={() => setRecording(false)}>Cancel</button></div>}
         </div>
-        <div className="chat-input-area"><div className="suggestion-row"><span>TRY ASKING</span><button onClick={() => sendQuestion('What is covered under this policy?')}>What is covered?</button><button onClick={() => sendQuestion('What are the exclusions in this policy?')}>What is excluded?</button><button onClick={() => sendQuestion('How do I make a claim?')}>How to claim?</button></div><form className="chat-input" onSubmit={(event) => { event.preventDefault(); sendQuestion(question) }}><input value={question} onChange={(event) => setQuestion(event.target.value)} placeholder={`Ask anything about ${policy?.filename || POLICY.name}...`} aria-label="Ask your policy" disabled={sending} /><button type="button" className={`voice-button ${recording ? 'voice-active' : ''}`} aria-label="Voice input" onClick={() => setRecording((value) => !value)}><AudioLines size={17} /></button><button className="send-button" type="submit" aria-label="Send question" disabled={sending}><Send size={16} /></button></form><div className="chat-privacy-note"><LockKeyhole size={11} /> {policy ? 'Answers grounded in your policy document via RAG (SQLite) · Sources cited per response.' : 'Answers are grounded in the sample policy · This demo doesn’t send data to a service'}</div></div>
+        <div className="chat-input-area"><div className="suggestion-row"><span>TRY ASKING</span><button onClick={() => sendQuestion('What is covered under this policy?')}>What is covered?</button><button onClick={() => sendQuestion('What are the exclusions in this policy?')}>What is excluded?</button><button onClick={() => sendQuestion('How do I make a claim?')}>How to claim?</button></div><form className="chat-input" onSubmit={(event) => { event.preventDefault(); sendQuestion(question) }}><input value={question} onChange={(event) => { setQuestion(event.target.value); setRequestError('') }} placeholder={`Ask anything about ${policy?.filename || POLICY.name}...`} aria-label="Ask your policy" disabled={sending} /><button type="button" className={`voice-button ${recording ? 'voice-active' : ''}`} aria-label={recording ? 'Stop voice input' : 'Start voice input'} title={recording ? 'Stop voice input' : 'Start voice input'} onClick={toggleVoiceInput}><AudioLines size={17} /></button><button className="send-button" type="submit" aria-label="Send question" disabled={sending}><Send size={16} /></button></form><div className="chat-privacy-note"><LockKeyhole size={11} /> {policy ? 'Answers grounded in your policy document via RAG (SQLite) · Sources cited per response.' : 'Answers are grounded in the sample policy · This demo doesn’t send data to a service'}</div></div>
       </section>
       <aside className="chat-context">
         <div className="context-card"><div className="context-heading"><span className="eyebrow">POLICY CONTEXT</span></div><div className="context-doc-icon"><FileText size={19} /></div><h3>{policy?.filename || POLICY.name}</h3><p>{policy ? 'Your private policy document' : POLICY.insurer}</p><div className="context-divider" /><div className="context-row"><span>Plan type</span><b>{policy ? 'Uploaded PDF' : POLICY.kind}</b></div><div className="context-row"><span>Policy UIN</span><b>{policy ? 'From document analysis' : POLICY.uin}</b></div><div className="context-row"><span>Document</span><b>{policy?.status || `${POLICY.pages} pages`}</b></div><button className="context-open" onClick={() => navigate('/app/reader')}>Open policy <ArrowRight size={14} /></button></div>
@@ -1019,23 +1195,40 @@ export default function App() {
     }
   }, [policies, selectedPolicyId])
 
+  const processingPolicyKey = policies
+    .filter((policy) => policy.status === 'processing')
+    .map((policy) => policy.id)
+    .join(',')
+
   useEffect(() => {
-    if (!account) return
-    const hasProcessing = policies.some(p => p.status === 'processing')
-    if (!hasProcessing) return
-    // Poll every 5s while processing; auto-stop after 5 minutes (60 attempts)
+    if (!account?.id || !processingPolicyKey) return
+    const policyIds = processingPolicyKey.split(',')
     let attempts = 0
+    let active = true
     const interval = setInterval(async () => {
-      attempts++
+      attempts += 1
       try {
-        const updated = await getPolicies()
-        setPolicies(updated)
-        const stillProcessing = updated.some(p => p.status === 'processing')
-        if (!stillProcessing || attempts >= 60) clearInterval(interval)
-      } catch { /* silent */ }
-    }, 5000)
-    return () => clearInterval(interval)
-  }, [account, policies])
+        const statuses = await Promise.all(policyIds.map((policyId) => getPolicyStatus(policyId)))
+        if (!active) return
+        setPolicyError('')
+        if (statuses.some((status) => status.status !== 'processing')) {
+          const updated = await getPolicies()
+          if (active) setPolicies(updated)
+        } else if (attempts >= 240) {
+          clearInterval(interval)
+          setPolicyError('Document processing has not completed after an hour. Check the policy library for its latest status.')
+        }
+      } catch (error) {
+        if (active) {
+          setPolicyError(error.response?.data?.detail || 'Could not refresh document processing status.')
+        }
+      }
+    }, 15000)
+    return () => {
+      active = false
+      clearInterval(interval)
+    }
+  }, [account?.id, processingPolicyKey])
 
   useEffect(() => {
     document.body.classList.toggle('modal-open', uploadOpen)
@@ -1067,7 +1260,7 @@ export default function App() {
   else if (route === '/app/claims') page = <ClaimsPage navigate={navigate} policy={activePolicy} />
   else if (route === '/app/account') page = <AccountPage account={account} onAccountChange={setAccount} onSignOut={handleSignOut} />
   else if (route === '/app/notifications') page = <NotificationsPage account={account} onAccountChange={setAccount} />
-  else page = <OverviewPage account={account} policies={policies} navigate={navigate} openUpload={() => setUploadOpen(true)} onOpenPolicy={(id) => { setSelectedPolicyId(id); navigate('/app/reader') }} onAskPolicy={(id) => { setSelectedPolicyId(id); navigate('/app/ask') }} />
+  else page = <OverviewPage account={account} policies={policies} policyError={policyError} navigate={navigate} openUpload={() => setUploadOpen(true)} onOpenPolicy={(id) => { setSelectedPolicyId(id); navigate('/app/reader') }} onAskPolicy={(id) => { setSelectedPolicyId(id); navigate('/app/ask') }} />
 
   return <AppShell route={route} navigate={navigate} account={account} policies={policies} onOpenPolicy={(id) => { setSelectedPolicyId(id); navigate('/app/reader') }}>
     {page}

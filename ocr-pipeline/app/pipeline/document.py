@@ -4,6 +4,7 @@ import asyncio
 import logging
 import re
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 import pymupdf as fitz
@@ -55,15 +56,17 @@ def _native_text_blocks(page: fitz.Page) -> list[TextBlock]:
     ]
 
 
-def _scan_blocks(page: fitz.Page) -> list[TextBlock]:
-    from rapidocr_onnxruntime import RapidOCR
+def _scan_blocks(
+    page: fitz.Page,
+    pixmap: fitz.Pixmap,
+    ocr_engine: Any,
+) -> list[TextBlock]:
     import numpy as np
 
-    pixmap = page.get_pixmap(matrix=fitz.Matrix(OCR_DPI / 72, OCR_DPI / 72), alpha=False)
     image = np.frombuffer(pixmap.samples, dtype=np.uint8).reshape(
         pixmap.height, pixmap.width, pixmap.n
     )
-    results, _ = RapidOCR()(image)
+    results, _ = ocr_engine(image)
     if not results:
         return []
 
@@ -97,15 +100,48 @@ def extract_pdf_pages(pdf_path: Path) -> list[OCRPageResult]:
     parsed = parse_document(str(pdf_path), force_device="cpu", verbose=False)
     native_pdf = fitz.open(pdf_path)
     try:
-        results = []
+        parsed_pages = {}
         for parsed_page in parsed.pages:
             page_number = int(parsed_page.page)
             if page_number < 1 or page_number > native_pdf.page_count:
                 raise ValueError("OCR returned a page outside the PDF page range.")
+            if page_number in parsed_pages:
+                raise ValueError(f"OCR returned page {page_number} more than once.")
+            parsed_pages[page_number] = parsed_page
+
+        if len(parsed_pages) != native_pdf.page_count:
+            logger.warning(
+                "OCR returned %s page results for a %s page document.",
+                len(parsed_pages),
+                native_pdf.page_count,
+            )
+
+        results = []
+        ocr_engine = None
+        for page_number in range(1, native_pdf.page_count + 1):
             pdf_page = native_pdf[page_number - 1]
+            pixmap = pdf_page.get_pixmap(
+                matrix=fitz.Matrix(OCR_DPI / 72, OCR_DPI / 72),
+                alpha=False,
+            )
+            parsed_page = parsed_pages.get(page_number)
+            if parsed_page is None:
+                results.append(
+                    OCRPageResult(
+                        page_number=page_number,
+                        method="missing",
+                        text="",
+                    )
+                )
+                continue
+
             method = str(parsed_page.method)
             if method == "ocr":
-                blocks = _scan_blocks(pdf_page)
+                if ocr_engine is None:
+                    from rapidocr_onnxruntime import RapidOCR
+
+                    ocr_engine = RapidOCR()
+                blocks = _scan_blocks(pdf_page, pixmap, ocr_engine)
             else:
                 blocks = _native_text_blocks(pdf_page)
             results.append(
@@ -117,12 +153,7 @@ def extract_pdf_pages(pdf_path: Path) -> list[OCRPageResult]:
                     confidence=parsed_page.confidence,
                 )
             )
-        if len(results) != native_pdf.page_count:
-            logger.warning(
-                "OCR returned %s page results for a %s page document.",
-                len(results),
-                native_pdf.page_count,
-            )
+            del pixmap
         return results
     finally:
         native_pdf.close()
@@ -142,14 +173,7 @@ def annotate_pdf(
     pages: list[OCRPageResult],
     classifications: list[dict],
 ) -> dict:
-    colors = {
-        "Coverage": (0.13, 0.77, 0.37),
-        "Exclusion": (0.94, 0.27, 0.27),
-        "Financial": (0.23, 0.51, 0.96),
-        "Obligation": (0.96, 0.62, 0.04),
-        "Metadata": (0.55, 0.36, 0.96),
-        "Red_Flag": (0.86, 0.15, 0.47),
-    }
+    highlight_color = (1.0, 0.92, 0.15)
     doc = fitz.open(source_path)
     annotations = []
     try:
@@ -174,13 +198,12 @@ def annotate_pdf(
                         ) >= 80:
                             rects.append(fitz.Rect(block.bbox))
 
-                color = colors.get(point["category"], (0.5, 0.5, 0.5))
                 rectangles = []
                 for rect in rects:
                     annotation = pdf_page.add_rect_annot(rect)
-                    annotation.set_colors(stroke=color, fill=color)
-                    annotation.set_opacity(0.25)
-                    annotation.set_border(width=1.2)
+                    annotation.set_colors(stroke=highlight_color, fill=highlight_color)
+                    annotation.set_opacity(0.3)
+                    annotation.set_border(width=1)
                     annotation.set_info(
                         title=point["category"],
                         content=point["point_summary"],

@@ -6,12 +6,14 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from arq.worker import Retry
 
 from app.config import settings
 from app.models.schemas import CallbackPayload
 from app.pipeline.graph import build_graph
 
 logger = logging.getLogger(__name__)
+MAX_JOB_TRIES = 3
 
 
 async def _notify_backend(callback: CallbackPayload) -> None:
@@ -27,7 +29,7 @@ async def _notify_backend(callback: CallbackPayload) -> None:
         response.raise_for_status()
 
 
-async def process_policy(_: dict[str, Any], payload: dict[str, str]) -> None:
+async def process_policy(ctx: dict[str, Any], payload: dict[str, str]) -> None:
     job_id = payload["job_id"]
     policy_id = payload["policy_id"]
     logger.info("Starting OCR job %s for policy %s.", job_id, policy_id)
@@ -55,17 +57,26 @@ async def process_policy(_: dict[str, Any], payload: dict[str, str]) -> None:
         logger.info("OCR job %s completed.", job_id)
     except Exception:
         logger.exception("OCR job %s failed.", job_id)
-        try:
-            await _notify_backend(
-                CallbackPayload(
-                    job_id=job_id,
-                    policy_id=policy_id,
-                    status="failed",
-                    error="Policy processing failed. Check with support or upload the document again.",
+        if ctx.get("job_try", 1) >= MAX_JOB_TRIES:
+            try:
+                await _notify_backend(
+                    CallbackPayload(
+                        job_id=job_id,
+                        policy_id=policy_id,
+                        status="failed",
+                        error="Policy processing failed. Check the service configuration or upload the document again.",
+                    )
                 )
+            except Exception:
+                logger.exception("Could not send failed-job callback for %s.", job_id)
+        else:
+            logger.warning(
+                "OCR job %s will be retried (attempt %s of %s).",
+                job_id,
+                ctx.get("job_try", 1),
+                MAX_JOB_TRIES,
             )
-        except Exception:
-            logger.exception("Could not send failed-job callback for %s.", job_id)
+            raise Retry(defer=10)
         raise
 
 
@@ -77,4 +88,4 @@ class WorkerSettings:
     queue_name = settings.OCR_QUEUE_NAME
     max_jobs = 2
     job_timeout = 60 * 60
-    max_tries = 1
+    max_tries = MAX_JOB_TRIES

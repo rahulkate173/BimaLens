@@ -30,10 +30,11 @@ class Settings(BaseSettings):
     OCR_QUEUE_NAME: str = "bimalens:ocr:jobs"
     MAX_PDF_BYTES: int = 25 * 1024 * 1024
     SARVAM_MODEL: str = "sarvam-105b"
-    GROQ_MODEL: str = "llama-3.3-70b-versatile"
-    GOOGLE_MODEL: str = "gemini-2.0-flash"
+    GROQ_MODEL: str = "qwen/qwen3.8-27b"
+    GROQ_MAX_TOKENS: int = 700
+    GOOGLE_MODEL: str = "gemini-3.8-flash"
     # OCR uses Gemini as primary (larger context window, structured output)
-    OCR_PRIMARY_PROVIDER: str = "gemini"
+    OCR_PRIMARY_PROVIDER: str = "groq"
 
     # --- Service ---
     HOST: str = "0.0.0.0"

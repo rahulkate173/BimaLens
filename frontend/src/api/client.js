@@ -65,8 +65,8 @@ export async function getPolicyStatus(policyId) {
   return res.data;
 }
 
-export async function getPolicyPdfLink(policyId, annotated = false) {
-  const res = await api.get(`/policies/${policyId}/pdf-link`, { params: { annotated } });
+export async function getPolicyPdfLink(policyId) {
+  const res = await api.get(`/policies/${policyId}/pdf-link`, { params: { annotated: true } });
   return res.data;
 }
 
@@ -76,7 +76,7 @@ export async function getPolicyAnalysis(policyId) {
 }
 
 export async function getAnnotatedPdf(policyId) {
-  const { url } = await getPolicyPdfLink(policyId, true);
+  const { url } = await getPolicyPdfLink(policyId);
   const res = await axios.get(url, {
     responseType: 'blob',
     timeout: 60000,
@@ -110,7 +110,7 @@ export async function getPolicySummary(policyId, language = 'English') {
 
 export async function getSarvamTTS(policyId, text, language = 'hi-IN') {
   const res = await api.post(`/policies/${policyId}/tts`, { text, language });
-  return res.data; // { audio_base64 }
+  return res.data; // { audio_base64, audio_chunks }
 }
 
 export default api;

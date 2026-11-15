@@ -164,6 +164,32 @@ def _parse_answer(response: Any, evidence: list[dict[str, Any]]) -> tuple[str, l
     return answer.strip(), citations
 
 
+def _fallback_answer(evidence: list[dict[str, Any]]) -> dict[str, Any]:
+    selected = evidence[:3]
+    answer_lines = []
+    citations = []
+    for source in selected:
+        summary = str(source.get("point_summary") or "").strip()
+        if not summary:
+            summary = f'The policy states: “{source["quote"]}”'
+        if summary[-1:] not in {".", "!", "?"}:
+            summary += "."
+        answer_lines.append(f'• {summary} (Page {source["page"]})')
+        citations.append(
+            {
+                "page": source["page"],
+                "section": source.get("section", ""),
+                "quote": source["quote"],
+                "category": source.get("category", "Metadata"),
+            }
+        )
+    return {
+        "answer": "Based on the matching policy details:\n" + "\n".join(answer_lines),
+        "sources": citations,
+        "provider": None,
+    }
+
+
 async def _generate_grounded(
     *,
     prompt: str,
@@ -175,7 +201,8 @@ async def _generate_grounded(
 
     providers = provider_names if provider_names is not None else configured_models()
     if not providers:
-        raise RuntimeError("No LLM provider is configured. Add a Sarvam, Groq, or Google API key.")
+        logger.warning("No LLM provider is configured; returning matching policy summaries.")
+        return _fallback_answer(evidence)
 
     evidence_text = json.dumps(
         [
@@ -203,26 +230,8 @@ async def _generate_grounded(
             logger.warning("%s grounded-response attempt failed (%s).", name, type(error).__name__)
             failures.append(name)
 
-    # Keep a safe, directly quoted response available even if all providers fail
-    # or return unsupported citations. This is not a generated interpretation.
-    extractive = "; ".join(
-        f'Page {source["page"]}: “{source["quote"]}”' for source in evidence[:3]
-    )
-    citations = [
-        {
-            "page": source["page"],
-            "section": source.get("section", ""),
-            "quote": source["quote"],
-            "category": source.get("category", "Metadata"),
-        }
-        for source in evidence[:3]
-    ]
     logger.error("All configured LLM providers failed or returned invalid citations: %s.", ", ".join(failures))
-    return {
-        "answer": f"I couldn’t generate a plain-language explanation, but these policy excerpts may help: {extractive}",
-        "sources": citations,
-        "provider": None,
-    }
+    return _fallback_answer(evidence)
 
 
 async def ask_question(

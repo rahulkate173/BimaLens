@@ -75,6 +75,7 @@ class TTSRequest(BaseModel):
 
 class TTSResponse(BaseModel):
     audio_base64: str
+    audio_chunks: list[str] = Field(default_factory=list)
 
 
 class ModelConfig(BaseModel):

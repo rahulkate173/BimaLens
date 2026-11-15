@@ -75,7 +75,9 @@ async def upload_policy(owner_id: str, file: UploadFile) -> dict[str, str]:
 
     try:
         signed_pdf_url = await run_in_threadpool(
-            cloudinary_client.create_download_url, asset["public_id"]
+            cloudinary_client.create_download_url,
+            asset["public_id"],
+            expires_in=3600,
         )
         await trigger_ocr_pipeline(policy_id, signed_pdf_url)
     except Exception as error:
@@ -122,11 +124,11 @@ async def get_policy_document(owner_id: str, policy_id: str) -> dict[str, Any] |
     return await get_db().policies.find_one({"_id": object_id, "owner_id": owner_id})
 
 
-async def get_pdf_download_url(owner_id: str, policy_id: str, annotated: bool) -> str:
+async def get_pdf_download_url(owner_id: str, policy_id: str) -> str:
     document = await get_policy_document(owner_id, policy_id)
     if document is None:
         raise HTTPException(status_code=404, detail="Policy not found.")
-    public_id = document.get("annotated_pdf_public_id") if annotated else document.get("cloudinary_public_id")
+    public_id = document.get("annotated_pdf_public_id")
     if not public_id:
         raise HTTPException(status_code=409, detail="The annotated PDF is not ready yet.")
     try:

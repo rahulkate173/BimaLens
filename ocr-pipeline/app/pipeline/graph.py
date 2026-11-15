@@ -49,6 +49,8 @@ async def extract_node(state: GraphState) -> dict[str, list[OCRPageResult]]:
 
 async def classify_node(state: GraphState) -> dict[str, list[dict[str, Any]]]:
     classifications = await classify_pages(state["pages"])
+    if all(item.processing_status == "failed" for item in classifications):
+        raise RuntimeError("Policy classification failed for every page.")
     supported = []
     page_numbers = {page.page_number for page in state["pages"]}
     for classification in classifications:

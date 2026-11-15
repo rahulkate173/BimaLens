@@ -47,6 +47,9 @@ class PageClassification(BaseModel):
     page_number: int = Field(ge=1)
     section_title: str = Field(default="", max_length=300)
     extracted_points: list[ExtractedPoint] = Field(default_factory=list, max_length=30)
+    raw_text: str = ""
+    processing_status: Literal["completed", "failed"] = "completed"
+    error: str | None = None
 
 
 class TextBlock(BaseModel):

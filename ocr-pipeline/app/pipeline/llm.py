@@ -1,25 +1,29 @@
-"""LangChain providers for OCR clause extraction.
-Provider order: Gemini (primary — large context, structured output) → Groq → Sarvam fallback.
-"""
+"""Page-by-page policy clause extraction using configured LLM providers."""
 
 import asyncio
 import json
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import ValidationError
 
 from app.config import settings
-from app.models.schemas import ExtractedPoint, OCRPageResult, PageClassification
+from app.models.schemas import OCRPageResult, PageClassification
 
 logger = logging.getLogger(__name__)
+PROVIDER_RETRIES = 2
+PAGE_DELAY_SECONDS = 3
 
 CLASSIFICATION_PROMPT = """You are an exact insurance-policy clause extractor.
-Extract only material clauses visible in the supplied text from ONE page.
+Extract at most five material clauses visible in the supplied OCR text from ONE page.
 Never infer, paraphrase as a quotation, add legal advice, or use outside knowledge.
-For every point, exact_quote MUST be copied verbatim from the supplied page text.
+For every point, exact_quote MUST be copied verbatim from the supplied page text and limited to 300 characters.
+Keep point_summary to one short sentence. Prefer the most important clauses if there are many.
+Look for policy identifiers, insurer, dates, sum insured, coverage and benefit limits,
+exclusions, waiting periods, premiums, deductibles, claim steps and deadlines, and unusual restrictions.
 Use categories: Coverage, Exclusion, Financial, Obligation, Metadata, or Red_Flag.
 Return an empty extracted_points list when this page contains no material clause.
 Set page_number to {page_number}. Keep section_title empty if the heading is unclear.
@@ -45,8 +49,8 @@ def _gemini():
         model=settings.GOOGLE_MODEL,
         google_api_key=settings.GOOGLE_API_KEY,
         temperature=0,
-        max_retries=2,
-        timeout=120,
+        max_retries=0,
+        timeout=45,
     )
 
 
@@ -56,7 +60,9 @@ def _groq():
         model=settings.GROQ_MODEL,
         api_key=settings.GROQ_API_KEY,
         temperature=0,
-        max_retries=1,
+        max_tokens=settings.GROQ_MAX_TOKENS,
+        max_retries=0,
+        timeout=45,
     )
 
 
@@ -68,19 +74,25 @@ def _sarvam():
         api_key=settings.SARVAM_API_KEY,
         temperature=0,
         max_tokens=settings.SARVAM_MAX_TOKENS,
-        max_retries=1,
+        max_retries=0,
+        timeout=45,
     )
 
 
 def _ocr_providers() -> list[tuple[str, Any]]:
-    """Gemini first (best structured-output + context), then Groq, then Sarvam."""
-    providers = []
-    if settings.GOOGLE_API_KEY:
-        providers.append(("Gemini", _gemini))
-    if settings.GROQ_API_KEY:
-        providers.append(("Groq", _groq))
-    if settings.SARVAM_API_KEY:
-        providers.append(("Sarvam", _sarvam))
+    """Try the configured primary provider first, then use available fallbacks."""
+    provider_specs = {
+        "gemini": ("Gemini", settings.GOOGLE_API_KEY, _gemini),
+        "groq": ("Groq", settings.GROQ_API_KEY, _groq),
+        "sarvam": ("Sarvam", settings.SARVAM_API_KEY, _sarvam),
+    }
+    preferred = settings.OCR_PRIMARY_PROVIDER.strip().casefold()
+    order = [preferred] + [name for name in provider_specs if name != preferred]
+    providers = [
+        (provider_specs[name][0], provider_specs[name][2])
+        for name in order
+        if name in provider_specs and provider_specs[name][1]
+    ]
     if not providers:
         raise RuntimeError("No LLM provider configured. Set GOOGLE_API_KEY, GROQ_API_KEY or SARVAM_API_KEY.")
     return providers
@@ -121,19 +133,78 @@ def _parse_classification(text: str, page_number: int) -> PageClassification:
     return PageClassification.model_validate(payload)
 
 
-async def _classify_with_structured_output(builder: Any, messages: list, page_number: int) -> PageClassification:
-    """Try with_structured_output (best for Gemini)."""
-    response = await builder().with_structured_output(PageClassification).ainvoke(messages)
-    if not isinstance(response, PageClassification):
-        response = PageClassification.model_validate(response)
-    if response.page_number != page_number:
-        response = response.model_copy(update={"page_number": page_number})
-    return response
+async def _invoke_with_rate_limit_retry(
+    provider: str,
+    invoke: Callable[[], Awaitable[Any]],
+    page_number: int,
+) -> Any:
+    for attempt in range(PROVIDER_RETRIES + 1):
+        try:
+            return await invoke()
+        except Exception as error:
+            message = str(error)
+            status_code = getattr(error, "status_code", None)
+            response = getattr(error, "response", None)
+            if status_code is None and response is not None:
+                status_code = getattr(response, "status_code", None)
+            if status_code is None:
+                error_code = getattr(error, "code", None)
+                if callable(error_code):
+                    error_code = error_code()
+                if isinstance(error_code, int):
+                    status_code = error_code
+                elif isinstance(error_code, str) and error_code.isdigit():
+                    status_code = int(error_code)
+                elif isinstance(getattr(error_code, "value", None), tuple):
+                    status_code = error_code.value[0]
+
+            if isinstance(status_code, str) and status_code.isdigit():
+                status_code = int(status_code)
+            if status_code != 429 and not (isinstance(status_code, int) and 500 <= status_code < 600):
+                raise
+            if attempt == PROVIDER_RETRIES:
+                raise
+
+            delay = 2**attempt
+            match = re.search(
+                r"(?:try again in|retry after)\s+([\d.]+)\s*s?",
+                message,
+                re.IGNORECASE,
+            )
+            if match:
+                delay = max(delay, float(match.group(1)))
+            if response is not None:
+                retry_after = response.headers.get("retry-after")
+                if retry_after:
+                    try:
+                        delay = max(delay, float(retry_after))
+                    except ValueError:
+                        pass
+            delay = min(max(delay, 1.0), 60.0)
+            logger.warning(
+                "%s returned HTTP %s for page %s; retrying in %.1f seconds (attempt %s of %s).",
+                provider,
+                status_code,
+                page_number,
+                delay,
+                attempt + 1,
+                PROVIDER_RETRIES,
+            )
+            await asyncio.sleep(delay)
 
 
-async def _classify_with_raw_json(builder: Any, messages: list, page_number: int) -> PageClassification:
-    """Fallback: plain ainvoke + JSON parsing (works for Sarvam/Groq)."""
-    response = await builder().ainvoke(messages)
+async def _classify_with_raw_json(
+    provider: str,
+    builder: Any,
+    messages: list,
+    page_number: int,
+) -> PageClassification:
+    """Call one provider with this page's OCR text and parse its JSON response."""
+    response = await _invoke_with_rate_limit_retry(
+        provider,
+        lambda: builder().ainvoke(messages),
+        page_number,
+    )
     content = response.content
     if isinstance(content, list):
         content = "".join(
@@ -145,7 +216,7 @@ async def _classify_with_raw_json(builder: Any, messages: list, page_number: int
 
 async def classify_page(page: OCRPageResult) -> PageClassification:
     if not page.text.strip():
-        return PageClassification(page_number=page.page_number, extracted_points=[])
+        raise ValueError(f"No readable text was extracted from page {page.page_number}.")
 
     providers = _ocr_providers()
     page_text = page.text[: settings.SARVAM_CONTEXT_LIMIT]
@@ -157,13 +228,14 @@ async def classify_page(page: OCRPageResult) -> PageClassification:
     errors: list[str] = []
     for idx, (name, builder) in enumerate(providers):
         if idx > 0:
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
         try:
-            # Gemini supports with_structured_output reliably; others use raw JSON
-            if name == "Gemini":
-                result = await _classify_with_structured_output(builder, messages, page.page_number)
-            else:
-                result = await _classify_with_raw_json(builder, messages, page.page_number)
+            result = await _classify_with_raw_json(
+                name,
+                builder,
+                messages,
+                page.page_number,
+            )
 
             # Verify quotes are actually in the page text
             supported = [
@@ -175,7 +247,14 @@ async def classify_page(page: OCRPageResult) -> PageClassification:
                 logger.warning("Page %s: rejected %d unsupported quote(s).", page.page_number, rejected)
 
             logger.info("✅ Page %d classified by %s — %d clause(s).", page.page_number, name, len(supported))
-            return result.model_copy(update={"extracted_points": supported})
+            return result.model_copy(
+                update={
+                    "extracted_points": supported,
+                    "raw_text": page.text,
+                    "processing_status": "completed",
+                    "error": None,
+                }
+            )
 
         except (ValidationError, json.JSONDecodeError, ValueError) as err:
             logger.warning("%s returned bad output for page %s: %s", name, page.page_number, err)
@@ -184,8 +263,10 @@ async def classify_page(page: OCRPageResult) -> PageClassification:
             logger.warning("%s failed for page %s (%s): %s", name, page.page_number, type(err).__name__, err)
             errors.append(name)
 
-    logger.error("All providers failed for page %s (%s). Empty result.", page.page_number, ", ".join(errors))
-    return PageClassification(page_number=page.page_number, extracted_points=[])
+    raise RuntimeError(
+        f"All OCR classification providers failed for page {page.page_number} "
+        f"({', '.join(errors)})."
+    )
 
 
 async def classify_pages(pages: list[OCRPageResult]) -> list[PageClassification]:
@@ -196,19 +277,43 @@ async def classify_pages(pages: list[OCRPageResult]) -> list[PageClassification]
         done = idx + 1
         pct = int(done / total * 100)
         bar = "█" * (pct // 5) + "░" * (20 - pct // 5)
+        print(f"OCR worker: classifying page {page.page_number} ({done}/{total})", flush=True)
         logger.info("⏳ [%s] Classifying page %d/%d (%d%%)", bar, done, total, pct)
 
-        result = await classify_page(page)
+        try:
+            result = await classify_page(page)
+            result = result.model_copy(update={"raw_text": page.text})
+        except Exception:
+            logger.exception(
+                "OCR page %d/%d failed classification; continuing to the next page.",
+                done,
+                total,
+            )
+            result = PageClassification(
+                page_number=page.page_number,
+                raw_text=page.text,
+                processing_status="failed",
+                error="Page extraction failed. See OCR worker logs for provider details.",
+            )
         pts = len(result.extracted_points)
         logger.info(
-            "✅ Page %d/%d done — %d clause(s) extracted%s",
-            done, total, pts,
-            "" if pts else " (no material clauses)",
+            "OCR page %d/%d %s — %d clause(s)%s",
+            done,
+            total,
+            "completed" if result.processing_status == "completed" else "failed",
+            pts,
+            "" if pts else " (no clauses extracted)",
+        )
+        print(
+            f"OCR worker: page {page.page_number} "
+            f"{'completed' if result.processing_status == 'completed' else 'failed'} "
+            f"({pts} extracted points)",
+            flush=True,
         )
         results.append(result)
 
         if idx < total - 1:
-            await asyncio.sleep(1)  # 1s between pages (Gemini is generous on quota)
+            await asyncio.sleep(PAGE_DELAY_SECONDS)
 
     total_clauses = sum(len(r.extracted_points) for r in results)
     logger.info("🎉 OCR complete: %d pages, %d total clauses extracted.", total, total_clauses)

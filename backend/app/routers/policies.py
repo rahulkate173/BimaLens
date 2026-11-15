@@ -82,10 +82,9 @@ async def get_status(policy_id: str, owner_id: str = WorkspaceId):
 @router.get("/{policy_id}/pdf-link", response_model=PdfLinkResponse)
 async def get_pdf_link(
     policy_id: str,
-    annotated: bool = Query(default=True),
     owner_id: str = WorkspaceId,
 ):
-    url = await policy_service.get_pdf_download_url(owner_id, policy_id, annotated)
+    url = await policy_service.get_pdf_download_url(owner_id, policy_id)
     return PdfLinkResponse(url=url, expires_in=300)
 
 
@@ -171,7 +170,7 @@ async def text_to_speech(
     body: TTSRequest,
     owner_id: str = WorkspaceId,
 ):
-    """Convert text to speech via Sarvam AI TTS (bulbul:v2)."""
+    """Convert text to speech via Sarvam AI TTS (bulbul:v3)."""
     # Confirm policy belongs to this user
     policy = await policy_service.get_policy(owner_id, policy_id)
     if policy is None:
@@ -180,6 +179,16 @@ async def text_to_speech(
     sarvam_key = os.environ.get("SARVAM_API_KEY", "")
     if not sarvam_key:
         raise HTTPException(status_code=503, detail="Sarvam API key is not configured.")
+
+    language_codes = {
+        "en": "en-IN",
+        "english": "en-IN",
+        "en-in": "en-IN",
+        "hi": "hi-IN",
+        "hindi": "hi-IN",
+        "hi-in": "hi-IN",
+    }
+    target_language_code = language_codes.get(body.language.casefold(), body.language)
 
     # Sarvam TTS supports max ~500 chars per input; chunk the text
     text_chunks = [body.text[i:i + 500] for i in range(0, len(body.text), 500)]
@@ -196,16 +205,16 @@ async def text_to_speech(
                     },
                     json={
                         "inputs": [chunk],
-                        "target_language_code": body.language,
-                        "speaker": "meera",
-                        "model": "bulbul:v2",
+                        "target_language_code": target_language_code,
+                        "speaker": "priya",
+                        "model": "bulbul:v3",
                         "enable_preprocessing": True,
                     },
                 )
                 if response.status_code != 200:
                     raise HTTPException(
                         status_code=502,
-                        detail=f"Sarvam TTS returned {response.status_code}: {response.text[:200]}",
+                        detail=f"Sarvam TTS returned {response.status_code}: {response.text[:1000]}",
                     )
                 data = response.json()
                 audios = data.get("audios") or []
@@ -215,8 +224,7 @@ async def text_to_speech(
         if not audio_parts:
             raise HTTPException(status_code=502, detail="Sarvam TTS returned no audio data.")
 
-        # Return the first chunk's audio (clients can request chunks separately if needed)
-        return TTSResponse(audio_base64=audio_parts[0])
+        return TTSResponse(audio_base64=audio_parts[0], audio_chunks=audio_parts)
 
     except httpx.TimeoutException as exc:
         raise HTTPException(status_code=504, detail="Sarvam TTS request timed out.") from exc
