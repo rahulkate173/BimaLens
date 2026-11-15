@@ -81,6 +81,7 @@ def _build_sarvam_model():
         api_key=settings.SARVAM_API_KEY,
         temperature=0.1,
         max_retries=1,
+        max_tokens=32768,
     )
 
 
@@ -238,3 +239,60 @@ async def assess_fit(
     profile_text = json.dumps(profile, ensure_ascii=False)
     prompt = FIT_PROMPT.replace("{language}", language).replace("{profile}", profile_text)
     return await _generate_grounded(prompt=prompt, evidence=evidence)
+
+
+SUMMARY_PROMPT = """You are BimaLens. Generate a concise critical-points summary of this insurance policy for a policyholder.
+Focus on: coverage, exclusions, key obligations, red flags, financial terms, and deadlines.
+Write 5-8 bullet points in plain language.
+Respond in {language}.
+Return only valid JSON: {{"summary": "bullet-point summary as a single string with \\n• separators"}}
+
+POLICY EVIDENCE:
+{evidence}
+"""
+
+
+async def generate_summary(
+    analysis_data: dict | None,
+    language: str = "English",
+) -> dict:
+    from app.services.policy_service import policy_sources
+
+    sources = policy_sources(analysis_data)
+    if not sources:
+        return {"summary": "No policy content could be extracted for summary.", "provider": None}
+    # Use up to 40 sources for summary (more context)
+    evidence_text = json.dumps(
+        [
+            {
+                "id": i,
+                "page": s["page"],
+                "section": s.get("section", ""),
+                "category": s.get("category", ""),
+                "quote": s["quote"],
+                "summary": s.get("point_summary", ""),
+            }
+            for i, s in enumerate(sources[:40])
+        ],
+        ensure_ascii=False,
+    )
+    prompt = SUMMARY_PROMPT.replace("{language}", language).replace("{evidence}", evidence_text)
+    messages = [SystemMessage(content=prompt)]
+
+    failures = []
+    for name, builder in configured_models():
+        try:
+            response = await builder().ainvoke(messages)
+            text = _response_text(response).strip()
+            text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE)
+            payload = json.loads(text)
+            summary = payload.get("summary", "")
+            if summary:
+                return {"summary": summary, "provider": name}
+        except Exception as e:
+            logger.warning("Summary generation failed with %s: %s", name, e)
+            failures.append(name)
+
+    # Fallback: concatenate top quotes
+    fallback = "\n• ".join(f'Page {s["page"]}: {s["quote"][:100]}' for s in sources[:8])
+    return {"summary": "• " + fallback, "provider": None}

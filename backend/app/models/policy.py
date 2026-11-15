@@ -62,6 +62,21 @@ class ClaimChecklistResponse(BaseModel):
     disclaimer: str
 
 
+class PolicySummaryResponse(BaseModel):
+    summary: str
+    language: str = "English"
+    provider: str | None = None
+
+
+class TTSRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=5000)
+    language: str = Field(default="hi-IN", min_length=2, max_length=20)
+
+
+class TTSResponse(BaseModel):
+    audio_base64: str
+
+
 class ModelConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

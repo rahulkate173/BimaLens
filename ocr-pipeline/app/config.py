@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     # --- Rate limiting ---
     PAGE_CLASSIFICATION_CONCURRENCY: int = 1
 
+    # --- Sarvam tuning ---
+    SARVAM_MAX_TOKENS: int = 32768
+    SARVAM_CONTEXT_LIMIT: int = 24000
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
 

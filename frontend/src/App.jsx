@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   ArrowDown,
   ArrowLeft,
@@ -42,6 +42,8 @@ import {
   getPolicies,
   getPolicy,
   getPolicyPdfLink,
+  getPolicySummary,
+  getSarvamTTS,
   getCurrentAccount,
   askQuestion,
   signIn,
@@ -500,6 +502,114 @@ function MetricCard({ icon: Icon, label, value, note, className = '' }) {
   return <div className={`metric-card ${className}`}><div className="metric-icon"><Icon size={17} /></div><span className="metric-label">{label}</span><strong>{value}</strong><small>{note}</small></div>
 }
 
+function PolicySummaryCard({ policy }) {
+  const [summary, setSummary] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [language, setLanguage] = useState('English')
+  const [speaking, setSpeaking] = useState(false)
+  const audioRef = useRef(null)
+
+  const LANGUAGE_MAP = {
+    'English': 'en-IN', 'Hindi': 'hi-IN', 'Marathi': 'mr-IN',
+    'Bengali': 'bn-IN', 'Tamil': 'ta-IN', 'Telugu': 'te-IN',
+    'Kannada': 'kn-IN', 'Gujarati': 'gu-IN',
+  }
+
+  const loadSummary = async (lang) => {
+    if (!policy) return
+    setLoading(true); setError(''); setSummary(null)
+    try {
+      const result = await getPolicySummary(policy.id, lang)
+      setSummary(result.summary)
+    } catch { setError('Could not generate summary. Please try again.') }
+    finally { setLoading(false) }
+  }
+
+  const speakSummary = async () => {
+    if (!summary || speaking) return
+    setSpeaking(true)
+    const langCode = LANGUAGE_MAP[language] || 'en-IN'
+    try {
+      const result = await getSarvamTTS(policy.id, summary, langCode)
+      if (result.audio_base64) {
+        const audio = new Audio(`data:audio/wav;base64,${result.audio_base64}`)
+        audioRef.current = audio
+        audio.onended = () => setSpeaking(false)
+        audio.onerror = () => setSpeaking(false)
+        await audio.play(); return
+      }
+    } catch { /* fall through */ }
+    if ('speechSynthesis' in window) {
+      const utt = new SpeechSynthesisUtterance(summary)
+      utt.onend = () => setSpeaking(false)
+      utt.onerror = () => setSpeaking(false)
+      window.speechSynthesis.speak(utt)
+    } else { setSpeaking(false) }
+  }
+
+  const stopSpeaking = () => {
+    if (audioRef.current) { audioRef.current.pause(); audioRef.current = null }
+    window.speechSynthesis?.cancel()
+    setSpeaking(false)
+  }
+
+  if (!policy) return null
+  const bullets = summary ? summary.split(/\n+/).filter(Boolean) : []
+
+  return (
+    <section className="dashboard-card policy-summary-card">
+      <div className="card-heading">
+        <div>
+          <span className="eyebrow">POLICY INTELLIGENCE · AI SUMMARY</span>
+          <h2>Critical points summary.</h2>
+        </div>
+        <div className="summary-controls">
+          <div className="language-picker">
+            <Languages size={15} />
+            <select value={language} onChange={e => { setLanguage(e.target.value); setSummary(null) }} aria-label="Summary language">
+              {Object.keys(LANGUAGE_MAP).map(l => <option key={l}>{l}</option>)}
+            </select>
+            <ChevronDown size={13} />
+          </div>
+          <button className="button button-outline button-small" onClick={() => loadSummary(language)} disabled={loading}>
+            {loading ? <><span className="processing-spinner" aria-hidden="true" /> Summarizing…</> : <><Sparkles size={14} /> Generate summary</>}
+          </button>
+        </div>
+      </div>
+      {!summary && !loading && !error && (
+        <div className="summary-empty">
+          <FileText size={22} />
+          <p>Get a plain-language summary of your policy's critical points — coverage, exclusions, obligations, and red flags.</p>
+        </div>
+      )}
+      {loading && (
+        <div className="summary-loading" role="status" aria-live="polite">
+          <div className="summary-loading-bar"><span /></div>
+          <p>Reading your policy and extracting key points in {language}…</p>
+        </div>
+      )}
+      {error && <p className="form-error" role="alert">{error}</p>}
+      {summary && (
+        <div className="summary-content">
+          <div className="summary-text">
+            {bullets.map((line, i) => <div key={i} className="summary-bullet">{line}</div>)}
+          </div>
+          <div className="summary-voice-row">
+            <span className="summary-voice-label"><AudioLines size={14} /> Read aloud in {language} via Sarvam AI</span>
+            <div style={{ display: 'flex', gap: '0.5rem' }}>
+              {speaking
+                ? <button className="button button-outline button-small voice-stop-btn" onClick={stopSpeaking}><X size={14} /> Stop</button>
+                : <button className="button button-dark button-small" onClick={speakSummary}><AudioLines size={14} /> Listen</button>}
+              <button className="button button-outline button-small" onClick={() => loadSummary(language)} disabled={loading}><Sparkles size={13} /> Refresh</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
+  )
+}
+
 function OverviewPage({ account, policies, navigate, openUpload, onOpenPolicy, onAskPolicy }) {
   const readyPolicies = policies.filter((policy) => policy.status === 'ready')
   const processingPolicies = policies.filter((policy) => policy.status === 'processing')
@@ -526,7 +636,7 @@ function OverviewPage({ account, policies, navigate, openUpload, onOpenPolicy, o
         <div className="card-heading"><div><span className="eyebrow">YOUR POLICY LIBRARY</span><h2>{firstPolicy ? 'Your latest policy.' : 'Start with your first policy.'}</h2></div><button className="button button-outline button-small" onClick={() => navigate('/app/policies')}>View all</button></div>
         {firstPolicy ? <div className="policy-summary">
           <div className="policy-cover"><div className="cover-emblem"><Shield size={25} /></div><span>PRIVATE<br />DOCUMENT</span><span className="cover-lines">— — — —</span></div>
-          <div className="policy-summary-info"><div className="insurer-label"><span className="insurer-dot" /> Private policy document</div><h3>{firstPolicy.filename}</h3><p>Added {new Date(firstPolicy.uploaded_at).toLocaleDateString()}</p><div className="policy-tags"><span>{firstPolicy.status === 'ready' ? <CheckCircle2 size={12} /> : <Clock3 size={12} />} {firstPolicy.status}</span><span>{extractedDetails} details found</span></div><div className="policy-summary-actions"><button className="button button-dark button-small" disabled={firstPolicy.status !== 'ready'} onClick={() => onOpenPolicy(firstPolicy.id)}>Open policy <ArrowRight size={14} /></button><button className="button button-outline button-small" disabled={firstPolicy.status !== 'ready'} onClick={() => onAskPolicy(firstPolicy.id)}><MessageCircle size={14} /> Ask a question</button></div></div>
+          <div className="policy-summary-info"><div className="insurer-label"><span className="insurer-dot" /> Private policy document</div><h3>{firstPolicy.filename}</h3><p>Added {new Date(firstPolicy.uploaded_at).toLocaleDateString()}</p><div className="policy-tags"><span>{firstPolicy.status === 'ready' ? <CheckCircle2 size={12} /> : firstPolicy.status === 'processing' ? <span className="processing-spinner" /> : <Clock3 size={12} />} {firstPolicy.status === 'processing' ? 'Analyzing…' : firstPolicy.status}</span><span>{extractedDetails} details found</span></div><div className="policy-summary-actions"><button className="button button-dark button-small" disabled={firstPolicy.status !== 'ready'} onClick={() => onOpenPolicy(firstPolicy.id)}>Open policy <ArrowRight size={14} /></button><button className="button button-outline button-small" disabled={firstPolicy.status !== 'ready'} onClick={() => onAskPolicy(firstPolicy.id)}><MessageCircle size={14} /> Ask a question</button></div></div>
         </div> : <div className="overview-empty"><p>Your policies will appear here after upload.</p><button className="button button-dark button-small" onClick={openUpload}><Upload size={14} /> Add a policy</button></div>}
       </section>
       <section className="dashboard-card next-step-card">
@@ -537,13 +647,14 @@ function OverviewPage({ account, policies, navigate, openUpload, onOpenPolicy, o
       </section>
       <section className="dashboard-card ask-prompt-card">
         <div className="ask-prompt-icon"><Sparkles size={17} /></div><div><span className="eyebrow">POLICY COMPANION</span><h2>Have a policy question?</h2><p>Get a source-grounded answer from one of your analyzed policies.</p></div>
-        <button className="button button-dark button-small" disabled={!readyPolicies.length} onClick={() => onAskPolicy(readyPolicies[0].id)}>Ask your policy <ArrowRight size={14} /></button>
+        <button className="button button-dark button-small" onClick={() => readyPolicies.length ? onAskPolicy(readyPolicies[0].id) : navigate('/app/policies')}>Ask your policy <ArrowRight size={14} /></button>
         <div className="prompt-suggestions"><span>{readyPolicies.length ? 'Ready to help' : 'Add and analyze a policy first'}</span></div>
       </section>
       <section className="dashboard-card trust-note-card">
         <div className="trust-note-icon"><ShieldCheck size={17} /></div><div><b>Grounded in your document</b><p>Policy answers show where the information came from. If a detail isn’t clear, BimaLens will say so.</p></div><AppLink to="/app/policies" onNavigate={navigate} aria-label="View your policies"><ArrowUpRight size={16} /></AppLink>
       </section>
     </div>
+    <PolicySummaryCard policy={firstPolicy?.status === 'ready' ? firstPolicy : null} />
   </div>
 }
 
@@ -558,16 +669,18 @@ function PoliciesPage({ policies, policyError, onOpenPolicy, onAskPolicy, openUp
     {matches.length ? matches.map((policy) => {
       const ready = policy.status === 'ready'
       const failed = policy.status === 'failed'
-      return <div className="policy-library-card" key={policy.id}>
+      const processing = policy.status === 'processing'
+      return <div className={`policy-library-card${processing ? ' policy-card-processing' : ''}`} key={policy.id}>
         <div className="library-document-art"><div className="library-paper"><span>PDF</span><i /><i /><i /><i /></div><div className="library-art-spark">✳</div></div>
         <div className="library-card-content">
-          <div className="library-status"><span className={failed ? 'policy-status-failed' : ''}>{ready ? <CheckCircle2 size={13} /> : <Clock3 size={13} />}{ready ? 'Analysis ready' : failed ? 'Analysis failed' : 'Analysis processing'}</span><span>{new Date(policy.uploaded_at).toLocaleDateString()}</span></div>
+          <div className="library-status"><span className={`${failed ? 'policy-status-failed' : ''} ${processing ? 'policy-status-processing' : ''}`}>{processing ? <span className="processing-spinner" /> : ready ? <CheckCircle2 size={13} /> : <Clock3 size={13} />}{ready ? 'Analysis ready' : failed ? 'Analysis failed' : 'Analyzing policy…'}</span><span>{new Date(policy.uploaded_at).toLocaleDateString()}</span></div>
           <div className="insurer-label"><span className="insurer-dot" /> Private policy document</div>
           <h2>{policy.filename}</h2>
           <p>Uploaded document · {policy.status}</p>
           {failed && policy.error && <p className="policy-error-text">{policy.error}</p>}
-          <div className="library-card-tags"><span><FileText size={13} /> PDF document</span><span>{ready ? <><Sparkles size={13} /> Analysis complete</> : failed ? 'Needs attention' : 'Analysis in progress'}</span></div>
-          <div className="library-card-footer"><small><LockKeyhole size={12} /> Stored in your private workspace</small><div><button className="button button-outline button-small" disabled={!ready} onClick={() => onAskPolicy(policy.id)}><MessageCircle size={13} /> Ask</button><button className="button button-dark button-small" disabled={!ready} onClick={() => onOpenPolicy(policy.id)}>{ready ? 'Open policy' : failed ? 'Unavailable' : 'Processing'} {ready && <ArrowRight size={14} />}</button></div></div>
+          {processing && <div className="processing-bar"><span /></div>}
+          <div className="library-card-tags"><span><FileText size={13} /> PDF document</span><span>{ready ? <><Sparkles size={13} /> Analysis complete</> : failed ? 'Needs attention' : <><span className="processing-spinner" /> Analysis in progress</>}</span></div>
+          <div className="library-card-footer"><small><LockKeyhole size={12} /> Stored in your private workspace</small><div><button className="button button-outline button-small" disabled={!ready} onClick={() => onAskPolicy(policy.id)}><MessageCircle size={13} /> Ask</button><button className="button button-dark button-small" disabled={!ready} onClick={() => onOpenPolicy(policy.id)}>{ready ? 'Open policy' : failed ? 'Unavailable' : 'Processing…'} {ready && <ArrowRight size={14} />}</button></div></div>
         </div>
       </div>
     }) : <div className="empty-state"><FileSearch2 size={24} /><h3>{policies.length ? 'No matching policies' : 'No policies yet'}</h3><p>{policies.length ? 'Try another search term.' : 'Add a policy PDF to begin analysis in your private workspace.'}</p>{!policies.length && <button className="button button-dark button-small" onClick={openUpload}><Upload size={14} /> Add a policy</button>}</div>}
@@ -676,23 +789,23 @@ function AskPage({ navigate, policy }) {
   }
   if (!policy) return <div className="page"><PageTitle eyebrow="YOUR POLICY, ON YOUR TERMS" title="Ask your policy" description="Upload and analyze a policy before asking document-grounded questions." /><div className="empty-state"><MessageCircle size={24} /><h3>No analyzed policy selected</h3><p>Choose a ready policy from your library to ask questions about its wording.</p><button className="button button-dark button-small" onClick={() => navigate('/app/policies')}>Open policy library <ArrowRight size={14} /></button></div></div>
   return <div className="page ask-page">
-    <div className="ask-page-header"><div><div className="eyebrow">YOUR POLICY, ON YOUR TERMS</div><h1>Ask your policy</h1><p>Simple answers, grounded in your document. No guesswork.</p></div><div className="language-picker"><Languages size={15} /><select value={language} onChange={(event) => setLanguage(event.target.value)} aria-label="Answer language"><option>English</option><option>Hindi</option><option>Marathi</option></select><ChevronDown size={13} /></div></div>
+    <div className="ask-page-header"><div><div className="eyebrow">YOUR POLICY, ON YOUR TERMS</div><h1>Ask your policy</h1><p>Simple answers, grounded in your document. No guesswork.</p></div><div className="language-picker"><Languages size={15} /><select value={language} onChange={(event) => setLanguage(event.target.value)} aria-label="Answer language"><option>English</option><option>Hindi</option><option>Marathi</option><option>Bengali</option><option>Tamil</option><option>Telugu</option><option>Kannada</option><option>Gujarati</option></select><ChevronDown size={13} /></div></div>
     <div className="chat-layout">
       <section className="chat-panel">
-        <div className="chat-policy-bar"><div className="chat-policy-icon"><FileText size={16} /></div><div><b>{policy?.filename || POLICY.name}</b><small>{policy ? 'Your uploaded policy' : `${POLICY.kind} · ${POLICY.pages} pages`}</small></div><span className="chat-ready"><span /> {policy?.status?.toUpperCase() || 'READY'}</span></div>
+        <div className="chat-policy-bar"><div className="chat-policy-icon"><FileText size={16} /></div><div><b>{policy?.filename || POLICY.name}</b><small>{policy ? 'Your uploaded policy' : `${POLICY.kind} · ${POLICY.pages} pages`}</small></div><span className="chat-rag-badge"><Sparkles size={9} /> RAG</span><span className="chat-ready"><span /> {policy?.status?.toUpperCase() || 'READY'}</span></div>
         <div className="chat-messages">
           <div className="chat-day-divider"><span>TODAY</span></div>
           {messages.map((message, index) => <div key={`${message.role}-${index}`} className={`chat-message ${message.role === 'user' ? 'message-user' : ''}`}><div className={`chat-avatar ${message.role === 'user' ? 'user-chat-avatar' : ''}`}>{message.role === 'user' ? 'You' : <span className="brand-mark"><span /><span /><span /></span>}</div><div className="chat-message-content"><div className="chat-message-meta"><b>{message.role === 'user' ? 'You' : 'Bima'}</b><span>{message.role === 'user' ? '10:42 AM' : 'Just now'}</span></div><p>{message.text}</p>{message.source && <button className="source-chip" onClick={() => navigate('/app/reader')}><BookOpen size={13} /> {message.source} <ArrowUpRight size={12} /></button>}</div></div>)}
-          {sending && <div className="recording-state" role="status">Checking your policy for an answer…</div>}
+          {sending && <div className="recording-state" role="status"><span className="processing-spinner" />Checking your policy for an answer…</div>}
           {requestError && <p className="form-error chat-request-error" role="alert">{requestError}</p>}
           {recording && <div className="recording-state"><AudioLines size={17} /> Listening for your question… <button onClick={() => setRecording(false)}>Cancel</button></div>}
         </div>
-        <div className="chat-input-area"><div className="suggestion-row"><span>TRY ASKING</span><button onClick={() => sendQuestion('What do I need for an annuity payment?')}>What do I need for an annuity payment?</button><button onClick={() => sendQuestion('How do I notify a death claim?')}>How do I notify a death claim?</button></div><form className="chat-input" onSubmit={(event) => { event.preventDefault(); sendQuestion(question) }}><input value={question} onChange={(event) => setQuestion(event.target.value)} placeholder={`Ask anything about ${policy?.filename || POLICY.name}...`} aria-label="Ask your policy" disabled={sending} /><button type="button" className={`voice-button ${recording ? 'voice-active' : ''}`} aria-label="Voice input" onClick={() => setRecording((value) => !value)}><AudioLines size={17} /></button><button className="send-button" type="submit" aria-label="Send question" disabled={sending}><Send size={16} /></button></form><div className="chat-privacy-note"><LockKeyhole size={11} /> {policy ? 'Questions are sent to the policy analysis service for a document-grounded answer.' : 'Answers are grounded in the sample policy · This demo doesn’t send data to a service'}</div></div>
+        <div className="chat-input-area"><div className="suggestion-row"><span>TRY ASKING</span><button onClick={() => sendQuestion('What is covered under this policy?')}>What is covered?</button><button onClick={() => sendQuestion('What are the exclusions in this policy?')}>What is excluded?</button><button onClick={() => sendQuestion('How do I make a claim?')}>How to claim?</button></div><form className="chat-input" onSubmit={(event) => { event.preventDefault(); sendQuestion(question) }}><input value={question} onChange={(event) => setQuestion(event.target.value)} placeholder={`Ask anything about ${policy?.filename || POLICY.name}...`} aria-label="Ask your policy" disabled={sending} /><button type="button" className={`voice-button ${recording ? 'voice-active' : ''}`} aria-label="Voice input" onClick={() => setRecording((value) => !value)}><AudioLines size={17} /></button><button className="send-button" type="submit" aria-label="Send question" disabled={sending}><Send size={16} /></button></form><div className="chat-privacy-note"><LockKeyhole size={11} /> {policy ? 'Answers grounded in your policy document via RAG (SQLite) · Sources cited per response.' : 'Answers are grounded in the sample policy · This demo doesn’t send data to a service'}</div></div>
       </section>
       <aside className="chat-context">
         <div className="context-card"><div className="context-heading"><span className="eyebrow">POLICY CONTEXT</span></div><div className="context-doc-icon"><FileText size={19} /></div><h3>{policy?.filename || POLICY.name}</h3><p>{policy ? 'Your private policy document' : POLICY.insurer}</p><div className="context-divider" /><div className="context-row"><span>Plan type</span><b>{policy ? 'Uploaded PDF' : POLICY.kind}</b></div><div className="context-row"><span>Policy UIN</span><b>{policy ? 'From document analysis' : POLICY.uin}</b></div><div className="context-row"><span>Document</span><b>{policy?.status || `${POLICY.pages} pages`}</b></div><button className="context-open" onClick={() => navigate('/app/reader')}>Open policy <ArrowRight size={14} /></button></div>
         <div className="grounding-card"><div><ShieldCheck size={16} /><b>Grounded answers</b></div><p>Answers reference the analyzed policy. When the source does not support a clear answer, BimaLens should say so rather than guess.</p><AppLink to="/app/reader" onNavigate={navigate}>See how citations work <ArrowRight size={13} /></AppLink></div>
-        <div className="language-note"><Languages size={15} /><span>Choose an answer language above. Voice input is not enabled yet.</span></div>
+        <div className="language-note"><Languages size={15} /><span>Choose your answer language above. 8 Indian languages supported via Sarvam AI.</span></div>
       </aside>
     </div>
   </div>
@@ -821,7 +934,7 @@ function UploadModal({ onClose, navigate, onUploaded }) {
     }
   }
 
-  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !submitting) onClose() }}><section className="upload-modal" role="dialog" aria-modal="true" aria-labelledby="upload-title"><button className="modal-close" onClick={onClose} aria-label="Close" disabled={submitting}><X size={18} /></button><span className="modal-icon"><Upload size={20} /></span><div className="eyebrow">ADD A POLICY</div><h2 id="upload-title">Bring your policy into focus.</h2><p>Upload a PDF to store it in your private workspace and start document analysis.</p><label className="drop-zone"><input type="file" accept="application/pdf,.pdf" disabled={submitting} onChange={(event) => { setFile(event.target.files?.[0] ?? null); setError('') }} /><span className="drop-icon"><FilePlus2 size={20} /></span><b>{file?.name || 'Choose a policy PDF'}</b><small>{file ? 'Ready to upload securely' : 'PDF · Maximum file size 25 MB'}</small><span className="drop-browse">{file ? 'Choose another file' : 'Browse files'}</span></label><div className="upload-local-note"><LockKeyhole size={13} /> Your document is uploaded to your private workspace for analysis.</div>{submitting && <div className="upload-progress" role="status">Uploading… {progress}%</div>}{error && <div className="form-error" role="alert">{error}</div>}<button className="button button-dark modal-primary" disabled={!file || submitting} onClick={submit}>{submitting ? 'Uploading policy…' : 'Upload and analyze'} <ArrowRight size={15} /></button><button className="modal-cancel" onClick={onClose} disabled={submitting}>Cancel</button></section></div>
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !submitting) onClose() }}><section className="upload-modal" role="dialog" aria-modal="true" aria-labelledby="upload-title"><button className="modal-close" onClick={onClose} aria-label="Close" disabled={submitting}><X size={18} /></button><span className="modal-icon"><Upload size={20} /></span><div className="eyebrow">ADD A POLICY</div><h2 id="upload-title">Bring your policy into focus.</h2><p>Upload a PDF to store it in your private workspace and start document analysis.</p><label className="drop-zone"><input type="file" accept="application/pdf,.pdf" disabled={submitting} onChange={(event) => { setFile(event.target.files?.[0] ?? null); setError('') }} /><span className="drop-icon"><FilePlus2 size={20} /></span><b>{file?.name || 'Choose a policy PDF'}</b><small>{file ? 'Ready to upload securely' : 'PDF · Maximum file size 25 MB'}</small><span className="drop-browse">{file ? 'Choose another file' : 'Browse files'}</span></label><div className="upload-local-note"><LockKeyhole size={13} /> Your document is uploaded to your private workspace for analysis.</div>{submitting && <div className="upload-progress" role="status"><div className="processing-bar"><span /></div>Uploading… {progress}%</div>}{error && <div className="form-error" role="alert">{error}</div>}<button className="button button-dark modal-primary" disabled={!file || submitting} onClick={submit}>{submitting ? 'Uploading policy…' : 'Upload and analyze'} <ArrowRight size={15} /></button><button className="modal-cancel" onClick={onClose} disabled={submitting}>Cancel</button></section></div>
 }
 
 export default function App() {
@@ -905,6 +1018,19 @@ export default function App() {
       if (firstReadyPolicy) setSelectedPolicyId(firstReadyPolicy.id)
     }
   }, [policies, selectedPolicyId])
+
+  useEffect(() => {
+    if (!account) return
+    const hasProcessing = policies.some(p => p.status === 'processing')
+    if (!hasProcessing) return
+    const interval = setInterval(async () => {
+      try {
+        const updated = await getPolicies()
+        setPolicies(updated)
+      } catch { /* silent */ }
+    }, 5000)
+    return () => clearInterval(interval)
+  }, [account, policies])
 
   useEffect(() => {
     document.body.classList.toggle('modal-open', uploadOpen)

@@ -101,4 +101,16 @@ export async function getClaimChecklist(policyId) {
   return res.data;
 }
 
+// ── Summary & TTS ────────────────────────────────────────────
+
+export async function getPolicySummary(policyId, language = 'English') {
+  const res = await api.get(`/policies/${policyId}/summary`, { params: { language } });
+  return res.data; // { summary, language, provider }
+}
+
+export async function getSarvamTTS(policyId, text, language = 'hi-IN') {
+  const res = await api.post(`/policies/${policyId}/tts`, { text, language });
+  return res.data; // { audio_base64 }
+}
+
 export default api;

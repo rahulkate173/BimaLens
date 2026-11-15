@@ -45,7 +45,7 @@ def _sarvam():
         base_url=settings.SARVAM_API_BASE.rstrip("/") + "/",
         api_key=settings.SARVAM_API_KEY,
         temperature=0,
-        max_tokens=8192,
+        max_tokens=settings.SARVAM_MAX_TOKENS,
         max_retries=1,
     )
 
@@ -93,8 +93,8 @@ async def classify_page(page: OCRPageResult) -> PageClassification:
     if not page.text.strip():
         return PageClassification(page_number=page.page_number, extracted_points=[])
     providers = _providers()
-    # Truncate to 8000 chars — enough for one dense page, keeps output tokens manageable
-    page_text = page.text[:8000]
+    # Truncate to context limit — keeps output tokens manageable
+    page_text = page.text[:settings.SARVAM_CONTEXT_LIMIT]
     messages = [
         SystemMessage(content=CLASSIFICATION_PROMPT.format(page_number=page.page_number)),
         HumanMessage(content=f"PAGE TEXT (page {page.page_number}):\n{page_text}"),

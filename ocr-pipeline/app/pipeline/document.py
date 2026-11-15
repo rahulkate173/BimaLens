@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from urllib.parse import urlparse
 
-import fitz
+import pymupdf as fitz
 import httpx
 
 from app.config import settings

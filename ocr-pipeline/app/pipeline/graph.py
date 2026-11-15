@@ -8,7 +8,7 @@ from typing import Any, TypedDict
 
 import cloudinary
 import cloudinary.uploader
-import fitz
+import pymupdf as fitz
 from langgraph.graph import END, START, StateGraph
 from starlette.concurrency import run_in_threadpool
 

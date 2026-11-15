@@ -9,6 +9,7 @@ from app.config import settings
 from app.database import close_mongo_connection, connect_to_mongo, get_db
 from app.models.analysis import OcrCompleteWebhook
 from app.routers import auth, chat, policies, pi_tools
+from app.services import rag_store
 from app.services.policy_service import complete_ocr
 
 logging.basicConfig(level=settings.LOG_LEVEL.upper())
@@ -18,6 +19,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await connect_to_mongo()
+    rag_store.init_db()
     yield
     await close_mongo_connection()
 

@@ -17,6 +17,8 @@ services:
     container_name: bimalens-backend
     ports:
       - "8000:8000"
+    volumes:
+      - rag-data:/tmp
     environment:
       - MONGODB_URI=${MONGODB_URI}
       - "SESSION_SECRET=${SESSION_SECRET:?Set SESSION_SECRET to a random value of at least 32 characters}"
@@ -99,3 +101,4 @@ services:
 
 volumes:
   redis-data:
+  rag-data:

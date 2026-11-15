@@ -1,3 +1,6 @@
+import os
+
+import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
 from app.auth import WorkspaceId
@@ -9,10 +12,13 @@ from app.models.policy import (
     FitRequest,
     FitResponse,
     PdfLinkResponse,
+    PolicySummaryResponse,
     PolicyUploadResponse,
+    TTSRequest,
+    TTSResponse,
 )
-from app.services import policy_service
-from app.services.chat_service import ask_question, assess_fit
+from app.services import policy_service, rag_store
+from app.services.chat_service import ask_question, assess_fit, generate_summary
 
 router = APIRouter(
     prefix="/api/v1/policies",
@@ -131,3 +137,90 @@ async def get_claim_checklist(policy_id: str, owner_id: str = WorkspaceId):
         items=policy_service.claim_checklist(policy.get("analysis")),
         disclaimer="Checklist items summarize extracted policy clauses. They do not predict or guarantee a claim outcome.",
     )
+
+
+@router.get("/{policy_id}/summary", response_model=PolicySummaryResponse)
+async def get_policy_summary(
+    policy_id: str,
+    language: str = Query(default="English", min_length=2, max_length=30),
+    owner_id: str = WorkspaceId,
+):
+    """Generate a critical-points summary of the policy, then cache chunks in SQLite."""
+    policy = await policy_service.get_policy(owner_id, policy_id)
+    if policy is None:
+        raise HTTPException(status_code=404, detail="Policy not found.")
+    if policy["status"] != "ready":
+        raise HTTPException(status_code=409, detail="Policy analysis is not ready yet.")
+
+    # Populate / refresh the SQLite RAG store for this policy
+    sources = policy_service.policy_sources(policy.get("analysis"))
+    if sources:
+        rag_store.store_policy_chunks(policy_id, sources)
+
+    result = await generate_summary(policy.get("analysis"), language=language)
+    return PolicySummaryResponse(
+        summary=result["summary"],
+        language=language,
+        provider=result.get("provider"),
+    )
+
+
+@router.post("/{policy_id}/tts", response_model=TTSResponse)
+async def text_to_speech(
+    policy_id: str,
+    body: TTSRequest,
+    owner_id: str = WorkspaceId,
+):
+    """Convert text to speech via Sarvam AI TTS (bulbul:v2)."""
+    # Confirm policy belongs to this user
+    policy = await policy_service.get_policy(owner_id, policy_id)
+    if policy is None:
+        raise HTTPException(status_code=404, detail="Policy not found.")
+
+    sarvam_key = os.environ.get("SARVAM_API_KEY", "")
+    if not sarvam_key:
+        raise HTTPException(status_code=503, detail="Sarvam API key is not configured.")
+
+    # Sarvam TTS supports max ~500 chars per input; chunk the text
+    text_chunks = [body.text[i:i + 500] for i in range(0, len(body.text), 500)]
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            audio_parts: list[str] = []
+            for chunk in text_chunks[:10]:  # cap at ~5000 chars
+                response = await client.post(
+                    "https://api.sarvam.ai/text-to-speech",
+                    headers={
+                        "Authorization": f"Bearer {sarvam_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "inputs": [chunk],
+                        "target_language_code": body.language,
+                        "speaker": "meera",
+                        "model": "bulbul:v2",
+                        "enable_preprocessing": True,
+                    },
+                )
+                if response.status_code != 200:
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"Sarvam TTS returned {response.status_code}: {response.text[:200]}",
+                    )
+                data = response.json()
+                audios = data.get("audios") or []
+                if audios:
+                    audio_parts.append(audios[0])
+
+        if not audio_parts:
+            raise HTTPException(status_code=502, detail="Sarvam TTS returned no audio data.")
+
+        # Return the first chunk's audio (clients can request chunks separately if needed)
+        return TTSResponse(audio_base64=audio_parts[0])
+
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=504, detail="Sarvam TTS request timed out.") from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"TTS request failed: {exc}") from exc
