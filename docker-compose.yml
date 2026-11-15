@@ -1,0 +1,60 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: bimalens-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - MONGODB_URI=${MONGODB_URI}
+      - "SESSION_SECRET=${SESSION_SECRET:?Set SESSION_SECRET to a random value of at least 32 characters}"
+      - SESSION_COOKIE_SECURE=${SESSION_COOKIE_SECURE:-false}
+      - CLOUDINARY_CLOUD_NAME=${CLOUDINARY_CLOUD_NAME}
+      - CLOUDINARY_API_KEY=${CLOUDINARY_API_KEY}
+      - CLOUDINARY_API_SECRET=${CLOUDINARY_API_SECRET}
+      - SARVAM_API_KEY=${SARVAM_API_KEY}
+      - SARVAM_API_BASE=${SARVAM_API_BASE:-https://api.sarvam.ai/v1}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - OCR_PIPELINE_URL=http://ocr-pipeline:8001
+      - BACKEND_CALLBACK_URL=http://backend:8000
+      - CORS_ORIGINS=http://localhost:5173,http://localhost:3000
+    restart: unless-stopped
+    depends_on:
+      - ocr-pipeline
+
+  ocr-pipeline:
+    build:
+      context: ./ocr-pipeline
+      dockerfile: Dockerfile
+    container_name: bimalens-ocr-pipeline
+    ports:
+      - "8001:8001"
+    environment:
+      - SARVAM_API_KEY=${SARVAM_API_KEY}
+      - SARVAM_API_BASE=${SARVAM_API_BASE:-https://api.sarvam.ai/v1}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - CLOUDINARY_CLOUD_NAME=${CLOUDINARY_CLOUD_NAME}
+      - CLOUDINARY_API_KEY=${CLOUDINARY_API_KEY}
+      - CLOUDINARY_API_SECRET=${CLOUDINARY_API_SECRET}
+      - BACKEND_CALLBACK_URL=http://backend:8000
+      - HOST=0.0.0.0
+      - PORT=8001
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: bimalens-frontend
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_BASE_URL=http://localhost:8000
+    depends_on:
+      - backend
+    restart: unless-stopped
